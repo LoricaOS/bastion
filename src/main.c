@@ -128,20 +128,8 @@ load_logo(void)
     close(fd);
     if (got < sz) { free(s_logo_pixels); s_logo_pixels = NULL; s_logo_w = s_logo_h = 0; return; }
 
-    /* Pre-composite alpha onto the background color so we can blit opaquely */
-    uint32_t bg = THEME_SURFACE;
-    int npx = s_logo_w * s_logo_h;
-    for (int i = 0; i < npx; i++) {
-        uint32_t px = s_logo_pixels[i];
-        uint32_t a = (px >> 24) & 0xFF;
-        if (a == 0xFF) continue;  /* fully opaque — keep as-is */
-        if (a == 0) { s_logo_pixels[i] = bg; continue; }
-        uint32_t inv = 255 - a;
-        uint32_t r = (((px >> 16) & 0xFF) * a + ((bg >> 16) & 0xFF) * inv) / 255;
-        uint32_t g = (((px >> 8) & 0xFF) * a + ((bg >> 8) & 0xFF) * inv) / 255;
-        uint32_t b = ((px & 0xFF) * a + (bg & 0xFF) * inv) / 255;
-        s_logo_pixels[i] = (r << 16) | (g << 8) | b;
-    }
+    /* Kept as ARGB — draw_logo alpha-blends at draw time, so the greeter
+     * background can be a gradient instead of one flat compositing color. */
 }
 
 /* ---- Drawing helpers ------------------------------------------------- */
@@ -184,7 +172,10 @@ release_backbuf(void)
 static void
 fill_bg(void)
 {
-    draw_fill_rect(&s_surf, 0, 0, s_fb_w, s_fb_h, THEME_SURFACE);
+    /* Same vertical gradient as the desktop backdrop — the greeter fades
+     * into the session instead of jumping from a flat slab. */
+    draw_gradient_v(&s_surf, 0, 0, s_fb_w, s_fb_h,
+                    THEME_DESKTOP_TOP, THEME_DESKTOP_BOT);
 }
 
 static void
@@ -203,8 +194,8 @@ draw_logo(int cx, int y)
     int dw = s_logo_w / 2;
     int dh = s_logo_h / 2;
     int x0 = cx - dw / 2;
-    draw_blit_scaled(&s_surf, x0, y, dw, dh,
-                     s_logo_pixels, s_logo_w, s_logo_h);
+    draw_blit_alpha_scaled(&s_surf, x0, y, dw, dh,
+                           s_logo_pixels, s_logo_w, s_logo_h);
 }
 
 static void
@@ -214,6 +205,14 @@ draw_text_simple(int x, int y, const char *text, uint32_t color)
         font_draw_text(&s_surf, g_font_ui, 14, x, y, text, color);
     else
         draw_text_t(&s_surf, x, y, text, color);
+}
+
+/* Pixel width of a string as draw_text_simple renders it. */
+static int
+text_w(const char *text)
+{
+    return g_font_ui ? font_text_width(g_font_ui, 14, text)
+                     : (int)strlen(text) * 8;
 }
 
 /* ---- Crossfade helper ------------------------------------------------ */
@@ -285,36 +284,21 @@ draw_form(void)
         draw_text_simple(cx - 7 * 8 / 2, logo_y, "LORICAOS", 0x00FFFFFF);
     }
 
-    /* v1 disclaimer below logo — matches aegissite terminology */
-    {
-        const char *line1 = "v1 software -- first public release, not production-hardened";
-        const char *line2 = "The C kernel likely contains real, exploitable vulnerabilities";
-        int disc_y = logo_y + logo_dh + 16;
-        int tw1 = g_font_ui ? font_text_width(g_font_ui, 13, line1) : (int)strlen(line1) * 8;
-        int tw2 = g_font_ui ? font_text_width(g_font_ui, 13, line2) : (int)strlen(line2) * 8;
-        if (g_font_ui) {
-            font_draw_text(surf, g_font_ui, 13, cx - tw1 / 2, disc_y, line1, 0x00FFAA55);
-            font_draw_text(surf, g_font_ui, 13, cx - tw2 / 2, disc_y + 18, line2, 0x00AA9080);
-        } else {
-            draw_text_simple(cx - tw1 / 2, disc_y, line1, 0x00FFAA55);
-            draw_text_simple(cx - tw2 / 2, disc_y + 12, line2, 0x00AA9080);
-        }
-    }
-
     /* Fields well below logo — horizontal layout: [username] [password] [button] */
     int total_w = FIELD_W + FIELD_GAP + FIELD_W + FIELD_GAP + 100;
     int fx = cx - total_w / 2;
     int fy = s_fb_h * 3 / 4;  /* 75% down the screen */
 
     /* Lock mode indicator */
-    if (s_is_lock) {
-        int lock_tw = 6 * 8;
-        draw_text_simple(cx - lock_tw / 2, fy - 22, "Locked", THEME_ERROR);
-    }
+    if (s_is_lock)
+        draw_text_simple(cx - text_w("Locked") / 2, fy - 26, "Locked",
+                         THEME_TEXT_DIM);
 
-    /* Network status line — top of screen, useful for headless verification
-     * of the network stack on bare-metal where serial isn't available. */
-    {
+    /* Network status line — top-left, for headless network triage on
+     * bare-metal without serial. Diagnostics-only (greeter_diag cmdline
+     * flag, same gate as the input counters): the production greeter
+     * stays clean. */
+    if (s_diag_enabled) {
         bastion_netcfg_t info;
         memset(&info, 0, sizeof(info));
         (void)syscall(SYS_NETCFG, 1, (long)&info, 0, 0);
@@ -342,43 +326,46 @@ draw_form(void)
         }
     }
 
-    /* Username field */
-    draw_fill_rect(surf, fx, fy, FIELD_W, FIELD_H, THEME_INPUT_BG);
-    if (s_focus == 0)
-        draw_rect(surf, fx, fy, FIELD_W, FIELD_H, THEME_ACCENT);
-    if (s_user_len > 0)
-        draw_text_simple(fx + 8, fy + 8, s_user_buf, 0x00FFFFFF);
-    else if (s_focus != 0)
-        draw_text_simple(fx + 8, fy + 8, "username", THEME_TEXT_FAINT);
-    int ux = fx + FIELD_W + FIELD_GAP;
-
-    /* Password field */
-    draw_fill_rect(surf, ux, fy, FIELD_W, FIELD_H, THEME_INPUT_BG);
-    if (s_focus == 1)
-        draw_rect(surf, ux, fy, FIELD_W, FIELD_H, THEME_ACCENT);
-    if (s_pass_len > 0) {
+    /* Text field: rounded inset well + accent ring when focused + caret. */
+    {
+        struct { const char *ph; const char *text; int focus; } f[2];
         char stars[128];
         int i;
         for (i = 0; i < s_pass_len && i < 126; i++) stars[i] = '*';
         stars[i] = '\0';
-        draw_text_simple(ux + 8, fy + 8, stars, 0x00FFFFFF);
-    } else if (s_focus != 1) {
-        draw_text_simple(ux + 8, fy + 8, "password", THEME_TEXT_FAINT);
+        f[0].ph = "username"; f[0].text = s_user_buf; f[0].focus = (s_focus == 0);
+        f[1].ph = "password"; f[1].text = stars;      f[1].focus = (s_focus == 1);
+
+        for (i = 0; i < 2; i++) {
+            int x = fx + i * (FIELD_W + FIELD_GAP);
+            draw_rounded_rect(surf, x, fy, FIELD_W, FIELD_H, R_SM, THEME_INPUT_BG);
+            if (f[i].focus)
+                draw_rounded_outline(surf, x - 2, fy - 2,
+                                     FIELD_W + 4, FIELD_H + 4, R_SM + 2, 2,
+                                     THEME_ACCENT);
+            if (f[i].text[0])
+                draw_text_simple(x + 10, fy + 9, f[i].text, THEME_TEXT);
+            else if (!f[i].focus)
+                draw_text_simple(x + 10, fy + 9, f[i].ph, THEME_TEXT_FAINT);
+            if (f[i].focus) {
+                int caret_x = x + 10 + (f[i].text[0] ? text_w(f[i].text) + 2 : 0);
+                draw_fill_rect(surf, caret_x, fy + 8, 1, FIELD_H - 16, THEME_TEXT);
+            }
+        }
     }
-    int bx = ux + FIELD_W + FIELD_GAP;
+    int bx = fx + 2 * (FIELD_W + FIELD_GAP);
 
     /* Login/Unlock button */
     uint32_t btn_color = (s_focus == 2) ? THEME_ACCENT : THEME_SURFACE_2;
-    draw_fill_rect(surf, bx, fy, 100, FIELD_H, btn_color);
+    draw_rounded_rect(surf, bx, fy, 100, FIELD_H, R_SM, btn_color);
     const char *btn_text = s_is_lock ? "Unlock" : "Login";
-    int btn_tw = (int)strlen(btn_text) * 8;
-    draw_text_simple(bx + 50 - btn_tw / 2, fy + 8, btn_text, 0x00FFFFFF);
+    draw_text_simple(bx + 50 - text_w(btn_text) / 2, fy + 9, btn_text,
+                     (s_focus == 2) ? THEME_TEXT_ON_ACCENT : THEME_TEXT);
 
     /* Error message centered below */
-    if (s_error[0]) {
-        int err_tw = (int)strlen(s_error) * 8;
-        draw_text_simple(cx - err_tw / 2, fy + FIELD_H + 16, s_error, THEME_ERROR);
-    }
+    if (s_error[0])
+        draw_text_simple(cx - text_w(s_error) / 2, fy + FIELD_H + 16,
+                         s_error, THEME_ERROR);
 
     /* Input diagnostics, bottom-left: live kernel input-source counters
      * from /proc/kbdstat.  This is the only way to triage "keyboard dead
