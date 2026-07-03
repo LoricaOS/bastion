@@ -451,6 +451,12 @@ spawn_lumen(void)
         auth_grant_shell_caps();
         setenv("PATH", "/bin", 1);
         setenv("HOME", s_home, 1);
+        /* Root the whole graphical session at the user's home, like the
+         * text-console `login` does (chdir(home)). Without this the session —
+         * and every terminal/file-picker Lumen launches — inherits init's cwd
+         * of "/". Best-effort: a missing home shouldn't block the session. */
+        if (s_home[0])
+            (void)chdir(s_home);
         setenv("USER", s_username, 1);
         setenv("TERM", "dumb", 1);
         char *argv[] = { "lumen", NULL };
