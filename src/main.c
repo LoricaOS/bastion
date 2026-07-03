@@ -720,21 +720,15 @@ main(int argc, char **argv)
     if (autologin_user[0]) {
         strncpy(s_user_buf, autologin_user, sizeof(s_user_buf) - 1);
         s_user_len = (int)strlen(s_user_buf);
-        strncpy(s_pass_buf, "forevervigilant", sizeof(s_pass_buf) - 1);
-        s_pass_len = (int)strlen(s_pass_buf);
         s_focus = 2;
         draw_form();   /* paints + emits [BASTION] greeter ready */
 
-        /* auth_check sometimes returns -1 on the very first try in cold
-         * boots — a libauth / fs-cache race that we don't fully
-         * understand. Retry a few times before giving up. */
-        int auth_ok = 0;
-        for (int t = 0; t < 5; t++) {
-            if (do_auth() == 0) { auth_ok = 1; break; }
-            struct timespec ts = { 0, 200 * 1000000L };  /* 200ms */
-            nanosleep(&ts, NULL);
-        }
-        if (auth_ok) {
+        /* Passwordless session for the named user — same path as the
+         * production /etc/aegis/autologin file (do_autologin_nopass). This
+         * works for any account regardless of its password, so the test hook
+         * isn't tied to a specific test rootfs's credentials. Test-only:
+         * gated on the bastion_autologin= cmdline arg, never in production. */
+        if (do_autologin_nopass(autologin_user) == 0) {
             dprintf(2, "[BASTION] autologin OK for %s\n", autologin_user);
             s_lumen_pid = spawn_lumen();
             if (s_lumen_pid > 0)
