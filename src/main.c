@@ -663,6 +663,14 @@ main(int argc, char **argv)
         }
     }
 
+    /* Is autologin active? (the cmdline hook, or the production
+     * /etc/aegis/autologin file). If so, skip painting the greeter entirely —
+     * otherwise the login form flashes for a beat before lumen paints the
+     * desktop. The autologin blocks below still perform the actual login; this
+     * flag just gates the rendering. */
+    int autologin = (autologin_user[0] != '\0') ||
+                    (access("/etc/aegis/autologin", F_OK) == 0);
+
     dprintf(2, "bastion: mapping framebuffer...\n");
 
     /* Map framebuffer */
@@ -686,9 +694,13 @@ main(int argc, char **argv)
     load_logo();
     font_init();
 
-    /* Paint FB charcoal immediately to hide any kernel log remnants */
-    fill_bg();
-    blit_to_fb();
+    /* Paint FB charcoal immediately to hide any kernel log remnants — but only
+     * when we're actually showing the greeter. On autologin, leave the kernel's
+     * boot splash up until lumen paints the desktop (no greeter flash). */
+    if (!autologin) {
+        fill_bg();
+        blit_to_fb();
+    }
 
     /* Startup chime (async — DMA plays while the greeter comes up). */
     play_startup_sound();
@@ -721,7 +733,7 @@ main(int argc, char **argv)
         strncpy(s_user_buf, autologin_user, sizeof(s_user_buf) - 1);
         s_user_len = (int)strlen(s_user_buf);
         s_focus = 2;
-        draw_form();   /* paints + emits [BASTION] greeter ready */
+        dprintf(2, "[BASTION] greeter ready\n");  /* marker only — skip the paint on autologin */
 
         /* Passwordless session for the named user — same path as the
          * production /etc/aegis/autologin file (do_autologin_nopass). This
@@ -764,7 +776,7 @@ main(int argc, char **argv)
         }
         if (fu[0]) {
             dprintf(2, "[BASTION] file autologin user=%s\n", fu);
-            draw_form();
+            dprintf(2, "[BASTION] greeter ready\n");  /* marker only — skip the paint on autologin */
             if (do_autologin_nopass(fu) == 0) {
                 dprintf(2, "[BASTION] autologin OK for %s\n", fu);
                 s_lumen_pid = spawn_lumen();
