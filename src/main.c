@@ -31,16 +31,6 @@ extern char **environ;
 
 #define SYS_FB_MAP  513
 #define SYS_SPAWN   514
-#define SYS_NETCFG  500
-
-/* Mirrors kernel netcfg_info_t — for the greeter network status line. */
-typedef struct {
-    uint8_t  mac[6];
-    uint8_t  pad[2];
-    uint32_t ip;       /* network byte order */
-    uint32_t mask;
-    uint32_t gateway;
-} bastion_netcfg_t;
 
 /* ---- Framebuffer ----------------------------------------------------- */
 
@@ -293,38 +283,6 @@ draw_form(void)
     if (s_is_lock)
         draw_text_simple(cx - text_w("Locked") / 2, fy - 26, "Locked",
                          THEME_TEXT_DIM);
-
-    /* Network status line — top-left, for headless network triage on
-     * bare-metal without serial. Diagnostics-only (greeter_diag cmdline
-     * flag, same gate as the input counters): the production greeter
-     * stays clean. */
-    if (s_diag_enabled) {
-        bastion_netcfg_t info;
-        memset(&info, 0, sizeof(info));
-        (void)syscall(SYS_NETCFG, 1, (long)&info, 0, 0);
-        char netline[96];
-        if (info.ip != 0) {
-            uint8_t *b = (uint8_t *)&info.ip;
-            uint8_t *m = info.mac;
-            snprintf(netline, sizeof(netline),
-                     "net: %u.%u.%u.%u  mac %02x:%02x:%02x:%02x:%02x:%02x",
-                     b[0], b[1], b[2], b[3],
-                     m[0], m[1], m[2], m[3], m[4], m[5]);
-            draw_text_simple(20, 16, netline, THEME_OK);
-        } else {
-            uint8_t *m = info.mac;
-            int has_mac = m[0] || m[1] || m[2] || m[3] || m[4] || m[5];
-            if (has_mac) {
-                snprintf(netline, sizeof(netline),
-                         "net: NO IP (mac %02x:%02x:%02x:%02x:%02x:%02x  DHCP failing)",
-                         m[0], m[1], m[2], m[3], m[4], m[5]);
-            } else {
-                snprintf(netline, sizeof(netline),
-                         "net: NO INTERFACE (driver did not register netdev)");
-            }
-            draw_text_simple(20, 16, netline, THEME_ERROR);
-        }
-    }
 
     /* Text field: rounded inset well + accent ring when focused + caret. */
     {
